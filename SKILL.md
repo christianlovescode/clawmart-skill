@@ -32,7 +32,7 @@ GET https://clawmart.sh/api/search
 
 Every search is a single deterministic FTS query and DB lookup — no LLMs on Clawmart's side. Run as many searches as the task needs; they're cheap.
 
-### Response shape
+### Response shape (lean — for ranking)
 
 ```json
 {
@@ -42,6 +42,7 @@ Every search is a single deterministic FTS query and DB lookup — no LLMs on Cl
       "short_id": "rNtH2V",
       "title": "CoinGecko price feed",
       "tagline": "Real-time crypto prices via x402",
+      "description": "Paid HTTP endpoint that returns current and historical spot prices for 13,000+ coins. Supports batch lookups by symbol or contract address, returns JSON with…",
       "kind": "x402",
       "endpoint_url": "https://api.coingecko.com/x402/price",
       "capabilities": ["crypto-prices", "market-data"],
@@ -55,17 +56,36 @@ Every search is a single deterministic FTS query and DB lookup — no LLMs on Cl
 }
 ```
 
+`description` is truncated to ~300 chars — enough to judge fit. For full prose, prices, and kind-specific details (MCP tool list, x402 auth headers, skill repo info), call the detail endpoint below.
+
 `url` is the canonical human-facing listing page. Link to it verbatim when citing a result.
+
+## Detail endpoint (for short-listed picks)
+
+```
+GET https://clawmart.sh/api/listings/<short_id>
+```
+
+Returns the full listing — untruncated description, all prices (not just primary), sources / provenance, and `details.kindDetails` keyed by kind:
+
+- **`mcp`** — full tool list with names, descriptions, input schemas
+- **`x402`** — auth headers, settlement chain options, OpenAPI path (when available)
+- **`mpp`** — payment method catalog (card, stablecoin, chain options)
+- **`skill`** — GitHub repo, default branch, skill slug for `npx skills add`
+
+Also deterministic, also cache-friendly. Only call this for listings you've *already short-listed* from search — fetching detail on every hit wastes tokens.
 
 ## Workflow
 
 The decomposition and composition are **your job**, not Clawmart's. Clawmart just runs the searches you send it.
 
 1. **Decompose first.** If the request covers multiple capabilities ("check stock prices, post to Slack, pay for a data feed"), split into 2–4 focused sub-queries before you call the API. Narrow searches consistently beat one broad search.
-2. **Search each sub-query.** Call the endpoint once per sub-query. Use `kind=` to narrow when the user specified a preference (e.g. "a free tool" → `kind=mcp` or `kind=skill`; "I'm willing to pay" → `kind=x402` or `kind=mpp`).
+2. **Search each sub-query.** Call `/api/search` once per sub-query. Use `kind=` to narrow when the user specified a preference (e.g. "a free tool" → `kind=mcp` or `kind=skill`; "I'm willing to pay" → `kind=x402` or `kind=mpp`).
 3. **Reformulate and re-search if results are thin.** If a sub-query returns no strong matches, try a synonym or a broader phrase before giving up. Each call is cheap — err on the side of more searches, not fewer.
-4. **Compose a pack of 3–7 listings.** Dedupe by `short_id`, mix kinds when it serves the goal (a paid data source + a free MCP tool + a skill that glues them together is often the right shape), and drop anything with `quality_score < 0.3` unless nothing better exists.
-5. **If nothing matches, say so.** Don't force a pack from weak results — tell the user Clawmart doesn't have coverage for that ask.
+4. **Short-list 3–7 candidates** using `title` + `tagline` + `description` + `capabilities` from the lean search response. Dedupe by `short_id`. Mix kinds when it serves the goal (a paid data source + a free MCP tool + a skill that glues them together is often the right shape). Drop anything with `quality_score < 0.3` unless nothing better exists.
+5. **Fetch full detail for each short-listed pick** via `GET /api/listings/<short_id>`. Fan out in parallel — these calls are independent. Only now do you have the full `kindDetails` (MCP tool list, x402 auth headers, etc.) to write precise rationales and to actually *use* the listing.
+6. **Compose the final pack** using the detail response. Rationales should reference concrete capabilities you saw in `kindDetails`, not vague summaries.
+7. **If nothing matches, say so.** Don't force a pack from weak results — tell the user Clawmart doesn't have coverage for that ask.
 
 ## Output format
 
